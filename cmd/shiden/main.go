@@ -7,7 +7,7 @@ import (
 )
 
 func main() {
-	shiden := server.Server{Address: server.DefaultAddress}
+	shiden := server.New(server.DefaultAddress)
 	if err := shiden.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}

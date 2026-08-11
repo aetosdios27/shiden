@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/aetosdios27/shiden/internal/resp"
+	"github.com/aetosdios27/shiden/internal/store"
 )
 
 func TestParse(t *testing.T) {
@@ -85,7 +86,104 @@ func TestExecute(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			if got := Execute(test.cmd); !reflect.DeepEqual(got, test.want) {
+			database := store.New()
+			if got := Execute(test.cmd, database); !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("Execute() = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestSetGetAndOverwrite(t *testing.T) {
+	t.Parallel()
+
+	database := store.New()
+	binaryValue := string([]byte{0x00, 0xff, '\r', '\n'})
+
+	if got := Execute(Command{Name: "SET", Args: []string{"key", "old"}}, database); !reflect.DeepEqual(got, resp.SimpleString("OK")) {
+		t.Fatalf("first SET response = %#v, want OK", got)
+	}
+	if got := Execute(Command{Name: "SET", Args: []string{"key", binaryValue}}, database); !reflect.DeepEqual(got, resp.SimpleString("OK")) {
+		t.Fatalf("second SET response = %#v, want OK", got)
+	}
+	if got := Execute(Command{Name: "GET", Args: []string{"key"}}, database); !reflect.DeepEqual(got, resp.BulkString(binaryValue)) {
+		t.Fatalf("GET response = %#v, want binary bulk string", got)
+	}
+}
+
+func TestGetDistinguishesEmptyAndMissing(t *testing.T) {
+	t.Parallel()
+
+	database := store.New()
+	Execute(Command{Name: "SET", Args: []string{"empty", ""}}, database)
+
+	if got := Execute(Command{Name: "GET", Args: []string{"empty"}}, database); !reflect.DeepEqual(got, resp.BulkString("")) {
+		t.Fatalf("GET empty response = %#v, want empty bulk string", got)
+	}
+	if got := Execute(Command{Name: "GET", Args: []string{"missing"}}, database); !reflect.DeepEqual(got, resp.NullBulkString()) {
+		t.Fatalf("GET missing response = %#v, want null bulk string", got)
+	}
+}
+
+func TestDeleteCommand(t *testing.T) {
+	t.Parallel()
+
+	database := store.New()
+	database.Set("a", []byte("1"))
+	database.Set("b", []byte("2"))
+
+	command := Command{Name: "DEL", Args: []string{"a", "b", "missing", "a"}}
+	if got := Execute(command, database); !reflect.DeepEqual(got, resp.Integer(2)) {
+		t.Fatalf("DEL response = %#v, want integer 2", got)
+	}
+}
+
+func TestWriteCommandArgumentErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cmd  Command
+		want resp.Value
+	}{
+		{
+			name: "SET without arguments",
+			cmd:  Command{Name: "SET"},
+			want: resp.Error("ERR wrong number of arguments for 'set' command"),
+		},
+		{
+			name: "SET without value",
+			cmd:  Command{Name: "SET", Args: []string{"key"}},
+			want: resp.Error("ERR wrong number of arguments for 'set' command"),
+		},
+		{
+			name: "SET with excess arguments",
+			cmd:  Command{Name: "SET", Args: []string{"key", "value", "extra"}},
+			want: resp.Error("ERR wrong number of arguments for 'set' command"),
+		},
+		{
+			name: "GET without arguments",
+			cmd:  Command{Name: "GET"},
+			want: resp.Error("ERR wrong number of arguments for 'get' command"),
+		},
+		{
+			name: "GET with excess arguments",
+			cmd:  Command{Name: "GET", Args: []string{"key", "extra"}},
+			want: resp.Error("ERR wrong number of arguments for 'get' command"),
+		},
+		{
+			name: "DEL without arguments",
+			cmd:  Command{Name: "DEL"},
+			want: resp.Error("ERR wrong number of arguments for 'del' command"),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			database := store.New()
+			if got := Execute(test.cmd, database); !reflect.DeepEqual(got, test.want) {
 				t.Fatalf("Execute() = %#v, want %#v", got, test.want)
 			}
 		})

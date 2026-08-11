@@ -9,6 +9,7 @@ import (
 
 	"github.com/aetosdios27/shiden/internal/command"
 	"github.com/aetosdios27/shiden/internal/resp"
+	"github.com/aetosdios27/shiden/internal/store"
 )
 
 // DefaultAddress is Shiden's wire-protocol listen address.
@@ -16,7 +17,17 @@ const DefaultAddress = ":6380"
 
 // Server owns the TCP listener and connection loops.
 type Server struct {
-	Address string
+	Address  string
+	database *store.Store
+}
+
+// New constructs a server with one process-wide datastore shared by every
+// client connection.
+func New(address string) *Server {
+	return &Server{
+		Address:  address,
+		database: store.New(),
+	}
 }
 
 // ListenAndServe listens on the configured TCP address and serves clients.
@@ -32,11 +43,11 @@ func (s *Server) ListenAndServe() error {
 		if err != nil {
 			return fmt.Errorf("accept connection: %w", err)
 		}
-		go serveConnection(connection)
+		go serveConnection(connection, s.database)
 	}
 }
 
-func serveConnection(connection net.Conn) {
+func serveConnection(connection net.Conn, database *store.Store) {
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -64,7 +75,7 @@ func serveConnection(connection net.Conn) {
 		if err != nil {
 			response = resp.Error("ERR " + err.Error())
 		} else {
-			response = command.Execute(cmd)
+			response = command.Execute(cmd, database)
 		}
 
 		if err := encoder.Encode(response); err != nil {

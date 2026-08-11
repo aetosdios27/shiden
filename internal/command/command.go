@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/aetosdios27/shiden/internal/resp"
+	"github.com/aetosdios27/shiden/internal/store"
 )
 
 // Command is a normalized Redis command name and its arguments.
@@ -47,8 +48,9 @@ func Parse(frame resp.Value) (Command, error) {
 	}, nil
 }
 
-// Execute dispatches one parsed command and returns its RESP response.
-func Execute(cmd Command) resp.Value {
+// Execute dispatches one parsed command against database and returns its RESP
+// response.
+func Execute(cmd Command, database *store.Store) resp.Value {
 	switch cmd.Name {
 	case "PING":
 		switch len(cmd.Args) {
@@ -64,6 +66,26 @@ func Execute(cmd Command) resp.Value {
 			return wrongArgumentCount("echo")
 		}
 		return resp.BulkString(cmd.Args[0])
+	case "SET":
+		if len(cmd.Args) != 2 {
+			return wrongArgumentCount("set")
+		}
+		database.Set(cmd.Args[0], []byte(cmd.Args[1]))
+		return resp.SimpleString("OK")
+	case "GET":
+		if len(cmd.Args) != 1 {
+			return wrongArgumentCount("get")
+		}
+		value, exists := database.Get(cmd.Args[0])
+		if !exists {
+			return resp.NullBulkString()
+		}
+		return resp.BulkString(string(value))
+	case "DEL":
+		if len(cmd.Args) == 0 {
+			return wrongArgumentCount("del")
+		}
+		return resp.Integer(int64(database.Delete(cmd.Args...)))
 	default:
 		return resp.Error(fmt.Sprintf("ERR unknown command '%s'", strings.ToLower(cmd.Name)))
 	}
