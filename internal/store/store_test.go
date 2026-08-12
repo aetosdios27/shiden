@@ -2,7 +2,10 @@ package store
 
 import (
 	"bytes"
+	"fmt"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestSetAndGet(t *testing.T) {
@@ -126,5 +129,143 @@ func TestDelete(t *testing.T) {
 				t.Fatalf("Delete(%q) = %d, want %d", test.keys, got, test.want)
 			}
 		})
+	}
+}
+
+func TestExpire(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	database := newWithClock(func() time.Time { return now })
+	database.Set("session", []byte("alive"))
+
+	if changed := database.Expire("session", 2*time.Second); !changed {
+		t.Fatal("Expire() = false, want true")
+	}
+	if got, exists := database.Get("session"); !exists || !bytes.Equal(got, []byte("alive")) {
+		t.Fatalf("Get() before deadline = %q, %v; want %q, true", got, exists, "alive")
+	}
+
+	now = now.Add(2 * time.Second)
+	if got, exists := database.Get("session"); exists || got != nil {
+		t.Fatalf("Get() at deadline = %q, %v; want nil, false", got, exists)
+	}
+	if changed := database.Expire("session", time.Second); changed {
+		t.Fatal("Expire() after deadline = true, want false")
+	}
+}
+
+func TestExpireMissingAndImmediateDeletion(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	database := newWithClock(func() time.Time { return now })
+
+	if changed := database.Expire("missing", time.Second); changed {
+		t.Fatal("Expire(missing) = true, want false")
+	}
+
+	for _, lifetime := range []time.Duration{0, -time.Second} {
+		database.Set("key", []byte("value"))
+		if changed := database.Expire("key", lifetime); !changed {
+			t.Fatalf("Expire(key, %s) = false, want true", lifetime)
+		}
+		if got, exists := database.Get("key"); exists || got != nil {
+			t.Fatalf("Get() after Expire(key, %s) = %q, %v; want nil, false", lifetime, got, exists)
+		}
+	}
+}
+
+func TestSetClearsExpiration(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	database := newWithClock(func() time.Time { return now })
+	database.Set("key", []byte("old"))
+	database.Expire("key", time.Second)
+	database.Set("key", []byte("new"))
+
+	now = now.Add(time.Hour)
+	got, exists := database.Get("key")
+	if !exists || !bytes.Equal(got, []byte("new")) {
+		t.Fatalf("Get() after SET cleared expiration = %q, %v; want %q, true", got, exists, "new")
+	}
+}
+
+func TestDeleteIgnoresExpiredKeys(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	database := newWithClock(func() time.Time { return now })
+	database.Set("expired", []byte("old"))
+	database.Set("live", []byte("new"))
+	database.Expire("expired", time.Second)
+	now = now.Add(time.Second)
+
+	if deleted := database.Delete("expired", "live"); deleted != 1 {
+		t.Fatalf("Delete(expired, live) = %d, want 1", deleted)
+	}
+}
+
+func TestDeleteExpired(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	database := newWithClock(func() time.Time { return now })
+	database.Set("expired", []byte("old"))
+	database.Set("live", []byte("new"))
+	database.Set("empty", []byte{})
+	database.Expire("expired", time.Second)
+	database.Expire("empty", 2*time.Second)
+	now = now.Add(time.Second)
+
+	if deleted := database.DeleteExpired(); deleted != 1 {
+		t.Fatalf("DeleteExpired() = %d, want 1", deleted)
+	}
+	if _, exists := database.Get("expired"); exists {
+		t.Fatal("Get(expired) exists = true, want false")
+	}
+	if got, exists := database.Get("live"); !exists || !bytes.Equal(got, []byte("new")) {
+		t.Fatalf("Get(live) = %q, %v; want %q, true", got, exists, "new")
+	}
+	if got, exists := database.Get("empty"); !exists || len(got) != 0 {
+		t.Fatalf("Get(empty) = %q, %v; want empty, true", got, exists)
+	}
+}
+
+func TestConcurrentAccess(t *testing.T) {
+	t.Parallel()
+
+	database := New()
+	const (
+		goroutines = 32
+		iterations = 100
+	)
+
+	var waitGroup sync.WaitGroup
+	for worker := range goroutines {
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+
+			key := fmt.Sprintf("key-%d", worker)
+			for iteration := range iterations {
+				value := []byte(fmt.Sprintf("value-%d", iteration))
+				database.Set(key, value)
+				if _, exists := database.Get(key); !exists {
+					t.Errorf("Get(%q) exists = false during iteration %d", key, iteration)
+					return
+				}
+			}
+		}()
+	}
+	waitGroup.Wait()
+
+	for worker := range goroutines {
+		key := fmt.Sprintf("key-%d", worker)
+		got, exists := database.Get(key)
+		if !exists || !bytes.Equal(got, []byte("value-99")) {
+			t.Fatalf("Get(%q) = %q, %v; want %q, true", key, got, exists, "value-99")
+		}
 	}
 }

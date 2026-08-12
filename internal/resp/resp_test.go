@@ -58,7 +58,7 @@ func TestDecoderFragmentedFrame(t *testing.T) {
 	t.Parallel()
 
 	input := []byte("*2\r\n$4\r\nECHO\r\n$5\r\nhello\r\n")
-	reader := &fragmentReader{data: input, fragmentSize: 2}
+	reader := &fragmentReader{data: input, fragmentSize: 1}
 	decoder := NewDecoder(bufio.NewReader(reader))
 
 	got, err := decoder.Decode()

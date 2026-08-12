@@ -138,6 +138,63 @@ func TestDeleteCommand(t *testing.T) {
 	}
 }
 
+func TestExpireCommand(t *testing.T) {
+	t.Parallel()
+
+	t.Run("existing key", func(t *testing.T) {
+		t.Parallel()
+
+		database := store.New()
+		database.Set("session", []byte("alive"))
+		if got := Execute(Command{Name: "EXPIRE", Args: []string{"session", "10"}}, database); !reflect.DeepEqual(got, resp.Integer(1)) {
+			t.Fatalf("EXPIRE response = %#v, want integer 1", got)
+		}
+		if got := Execute(Command{Name: "GET", Args: []string{"session"}}, database); !reflect.DeepEqual(got, resp.BulkString("alive")) {
+			t.Fatalf("GET response before expiry = %#v, want bulk string", got)
+		}
+	})
+
+	t.Run("missing key", func(t *testing.T) {
+		t.Parallel()
+
+		database := store.New()
+		if got := Execute(Command{Name: "EXPIRE", Args: []string{"missing", "10"}}, database); !reflect.DeepEqual(got, resp.Integer(0)) {
+			t.Fatalf("EXPIRE response = %#v, want integer 0", got)
+		}
+	})
+
+	for _, seconds := range []string{"0", "-1"} {
+		t.Run("immediate deletion "+seconds, func(t *testing.T) {
+			t.Parallel()
+
+			database := store.New()
+			database.Set("session", []byte("alive"))
+			if got := Execute(Command{Name: "EXPIRE", Args: []string{"session", seconds}}, database); !reflect.DeepEqual(got, resp.Integer(1)) {
+				t.Fatalf("EXPIRE response = %#v, want integer 1", got)
+			}
+			if got := Execute(Command{Name: "GET", Args: []string{"session"}}, database); !reflect.DeepEqual(got, resp.NullBulkString()) {
+				t.Fatalf("GET response after immediate expiry = %#v, want null bulk string", got)
+			}
+		})
+	}
+
+	for _, seconds := range []string{"nope", "9223372037", "9223372036854775808"} {
+		t.Run("invalid seconds "+seconds, func(t *testing.T) {
+			t.Parallel()
+
+			database := store.New()
+			database.Set("session", []byte("alive"))
+			want := resp.Error("ERR value is not an integer or out of range")
+			if got := Execute(Command{Name: "EXPIRE", Args: []string{"session", seconds}}, database); !reflect.DeepEqual(got, want) {
+				t.Fatalf("EXPIRE response = %#v, want %#v", got, want)
+			}
+			if got := Execute(Command{Name: "GET", Args: []string{"session"}}, database); !reflect.DeepEqual(got, resp.BulkString("alive")) {
+				t.Fatalf("GET after invalid EXPIRE = %#v, want unchanged value", got)
+			}
+		})
+	}
+}
+
 func TestWriteCommandArgumentErrors(t *testing.T) {
 	t.Parallel()
 
@@ -175,6 +232,21 @@ func TestWriteCommandArgumentErrors(t *testing.T) {
 			name: "DEL without arguments",
 			cmd:  Command{Name: "DEL"},
 			want: resp.Error("ERR wrong number of arguments for 'del' command"),
+		},
+		{
+			name: "EXPIRE without arguments",
+			cmd:  Command{Name: "EXPIRE"},
+			want: resp.Error("ERR wrong number of arguments for 'expire' command"),
+		},
+		{
+			name: "EXPIRE without seconds",
+			cmd:  Command{Name: "EXPIRE", Args: []string{"key"}},
+			want: resp.Error("ERR wrong number of arguments for 'expire' command"),
+		},
+		{
+			name: "EXPIRE with excess arguments",
+			cmd:  Command{Name: "EXPIRE", Args: []string{"key", "1", "extra"}},
+			want: resp.Error("ERR wrong number of arguments for 'expire' command"),
 		},
 	}
 

@@ -2,11 +2,15 @@ package command
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aetosdios27/shiden/internal/resp"
 	"github.com/aetosdios27/shiden/internal/store"
 )
+
+const maxExpirationSeconds int64 = 9_223_372_036
 
 // Command is a normalized Redis command name and its arguments.
 type Command struct {
@@ -86,6 +90,23 @@ func Execute(cmd Command, database *store.Store) resp.Value {
 			return wrongArgumentCount("del")
 		}
 		return resp.Integer(int64(database.Delete(cmd.Args...)))
+	case "EXPIRE":
+		if len(cmd.Args) != 2 {
+			return wrongArgumentCount("expire")
+		}
+		seconds, err := strconv.ParseInt(cmd.Args[1], 10, 64)
+		if err != nil || seconds > maxExpirationSeconds {
+			return resp.Error("ERR value is not an integer or out of range")
+		}
+
+		var lifetime time.Duration
+		if seconds > 0 {
+			lifetime = time.Duration(seconds) * time.Second
+		}
+		if database.Expire(cmd.Args[0], lifetime) {
+			return resp.Integer(1)
+		}
+		return resp.Integer(0)
 	default:
 		return resp.Error(fmt.Sprintf("ERR unknown command '%s'", strings.ToLower(cmd.Name)))
 	}
